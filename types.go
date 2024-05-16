@@ -24,8 +24,9 @@ type Model interface {
 	ConditionExpression() *expression.Expression
 }
 
-// HasRelated is an interface that models can implement to provide related models that should be saved
+// HasRelated is an optional interface that models can implement if it provide related models that should be saved
 type HasRelated interface {
+	Model
 	Related() ([]Model, error)
 }
 
@@ -53,7 +54,8 @@ func KeyValue(value string) types.AttributeValue {
 	return &types.AttributeValueMemberS{Value: value}
 }
 
-// HasConditionExpression is a struct that models can embed to provide a setter-getter for condition expressions.
+// HasConditionExpression is a convenience struct that models can embed to
+// provide a setter-getter for condition expressions.
 type HasConditionExpression struct {
 	conditionExpression *expression.Expression
 }
