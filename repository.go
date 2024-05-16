@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
-	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
@@ -20,6 +19,7 @@ type repositoryImpl[T Model] struct {
 }
 
 // Modeler is a function that converts a map of attribute values into a model.
+// The repository uses this function to convert the output of DynamoDB operations into a model.
 type Modeler[T Model] func(item map[string]types.AttributeValue) (T, error)
 
 // TransactSaveMany implements Repository.
@@ -55,7 +55,7 @@ func (r *repositoryImpl[T]) Create(ctx context.Context, model T) error {
 		return errors.New("key is required")
 	}
 
-	mainPut, err := r.constructPutItem(model)
+	putItem, err := r.constructPutItem(model)
 	if err != nil {
 		return err
 	}
@@ -63,37 +63,21 @@ func (r *repositoryImpl[T]) Create(ctx context.Context, model T) error {
 	// In order to satisfy the "Create" operation, we need to ensure that the item does not already exist.
 	// We do this by constructing a condition expression that asserts that the item does not exist.
 	// We'll infer the proper expression from the model.Key()
-	expr, err := key.condtionExpressionForNew()
+	expr, err := key.CondtionExpressionForCreate()
 	if err != nil {
 		return err
 	}
+	putItem.ConditionExpression = expr.Condition()
+	putItem.ExpressionAttributeNames = expr.Names()
+	putItem.ExpressionAttributeValues = expr.Values()
 
-	mainPut.ConditionExpression = expr.Condition()
-	mainPut.ExpressionAttributeNames = expr.Names()
-	mainPut.ExpressionAttributeValues = expr.Values()
+	puts := []dynamodb.PutItemInput{*putItem}
 
-	puts := []dynamodb.PutItemInput{*mainPut}
-
-	// If the model has related models, we'll save those as well.
-	related, ok := Model(model).(HasRelated)
-	if ok {
-		// TODO: Bredth-first search for related models, if we want to go beyond 1 layer deep.
-		relatedModels, err := related.Related()
-		if err != nil {
-			return err
-		}
-		for _, rel := range relatedModels {
-			relPut, err := r.constructPutItem(rel)
-			if err != nil {
-				return err
-			}
-			puts = append(puts, *relPut)
-		}
-	}
+	puts = r.appendPutsFromRelatedModels(puts, model)
 
 	// If there's only one put, we can use PutItem.
 	if len(puts) == 1 {
-		_, err = r.client.PutItem(ctx, mainPut)
+		_, err = r.client.PutItem(ctx, putItem)
 		if err != nil {
 			return err
 		}
@@ -125,50 +109,33 @@ func (r *repositoryImpl[T]) Create(ctx context.Context, model T) error {
 
 // TransactSaveMany implements Repository.
 func (r *repositoryImpl[T]) Update(ctx context.Context, model T) error {
-
 	key := model.Key()
 	if key == nil || len(key) == 0 {
 		return errors.New("key is required")
 	}
 
-	mainPut, err := r.constructPutItem(model)
+	putItem, err := r.constructPutItem(model)
 	if err != nil {
 		return err
 	}
 
 	// In order to satisfy the "Update" operation, we need to ensure that the item already exists.
 	// We'll infer the proper expression from the model.Key()
-	expr, err := key.conditionExpressionForUpdate()
+	expr, err := key.ConditionExpressionForUpdate()
 	if err != nil {
 		return err
 	}
 
-	mainPut.ConditionExpression = expr.Condition()
-	mainPut.ExpressionAttributeNames = expr.Names()
-	mainPut.ExpressionAttributeValues = expr.Values()
+	putItem.ConditionExpression = expr.Condition()
+	putItem.ExpressionAttributeNames = expr.Names()
+	putItem.ExpressionAttributeValues = expr.Values()
 
-	puts := []dynamodb.PutItemInput{*mainPut}
-
-	// If the model has related models, we'll save those as well.
-	related, ok := Model(model).(HasRelated)
-	if ok {
-		// TODO: Bredth-first search for related models, if we want to go beyond 1 layer deep.
-		relatedModels, err := related.Related()
-		if err != nil {
-			return err
-		}
-		for _, rel := range relatedModels {
-			relPut, err := r.constructPutItem(rel)
-			if err != nil {
-				return err
-			}
-			puts = append(puts, *relPut)
-		}
-	}
+	puts := []dynamodb.PutItemInput{*putItem}
+	puts = r.appendPutsFromRelatedModels(puts, model)
 
 	// If there's only one put, we can use PutItem.
 	if len(puts) == 1 {
-		_, err = r.client.PutItem(ctx, mainPut)
+		_, err = r.client.PutItem(ctx, putItem)
 		if err != nil {
 			return err
 		}
@@ -205,6 +172,14 @@ func (r *repositoryImpl[T]) constructPutItem(model Model) (*dynamodb.PutItemInpu
 	if err != nil {
 		return nil, err
 	}
+
+	key := model.Key()
+	// Merge the key into the item. This is necessary in case the key is not part of the item, or if
+	// somehow they disagree. The key should always take precedence.
+	for k, v := range key {
+		item[k] = v
+	}
+
 	input.Item = item
 	if expr := model.ConditionExpression(); expr != nil {
 		input.ConditionExpression = expr.Condition()
@@ -214,43 +189,22 @@ func (r *repositoryImpl[T]) constructPutItem(model Model) (*dynamodb.PutItemInpu
 	return input, nil
 }
 
-func (key Key) condtionExpressionForNew() (*expression.Expression, error) {
-	conditions := []expression.ConditionBuilder{}
-	for k := range key {
-		conditions = append(conditions, expression.AttributeNotExists(expression.Name(k)))
+func (r *repositoryImpl[T]) appendPutsFromRelatedModels(puts []dynamodb.PutItemInput, model Model) []dynamodb.PutItemInput {
+	// Check if the model type supports related models.
+	related, ok := Model(model).(HasRelated)
+	if ok {
+		relatedModels, err := related.Related()
+		if err != nil {
+			return puts
+		}
+		// TODO: Bredth-first search for related models, if we want to go beyond 1 layer deep.
+		for _, rel := range relatedModels {
+			relPut, err := r.constructPutItem(rel)
+			if err != nil {
+				return puts
+			}
+			puts = append(puts, *relPut)
+		}
 	}
-
-	var exprBuilder expression.Builder
-	if len(conditions) == 1 {
-		exprBuilder = expression.NewBuilder().WithCondition(conditions[0])
-	} else {
-		exprBuilder = expression.NewBuilder().WithCondition(
-			expression.And(conditions[0], conditions[1]),
-		)
-	}
-	expr, err := exprBuilder.Build()
-	if err != nil {
-		return nil, err
-	}
-	return &expr, err
-}
-
-func (key Key) conditionExpressionForUpdate() (*expression.Expression, error) {
-	conditions := []expression.ConditionBuilder{}
-	for k := range key {
-		conditions = append(conditions, expression.AttributeExists(expression.Name(k)))
-	}
-	var exprBuilder expression.Builder
-	if len(conditions) == 1 {
-		exprBuilder = expression.NewBuilder().WithCondition(conditions[0])
-	} else {
-		exprBuilder = expression.NewBuilder().WithCondition(
-			expression.And(conditions[0], conditions[1]),
-		)
-	}
-	expr, err := exprBuilder.Build()
-	if err != nil {
-		return nil, err
-	}
-	return &expr, err
+	return puts
 }
