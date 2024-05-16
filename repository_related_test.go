@@ -43,6 +43,7 @@ func TestGet_Related(t *testing.T) {
 					"PK":       &types.AttributeValueMemberS{Value: "001"},
 					"Username": &types.AttributeValueMemberS{Value: "jappleseed"},
 					"Email":    &types.AttributeValueMemberS{Value: "john@appleseed.io"},
+					"Name":     &types.AttributeValueMemberS{Value: "John Appleseed"},
 					"Type":     &types.AttributeValueMemberS{Value: "User"},
 				},
 			},
@@ -82,6 +83,7 @@ func TestCreate_Related(t *testing.T) {
 							Item: map[string]types.AttributeValue{
 								"PK":       &types.AttributeValueMemberS{Value: "002"},
 								"Username": &types.AttributeValueMemberS{Value: "fherbert"},
+								"Name":     &types.AttributeValueMemberS{Value: "Frank Herbert"},
 								"Type":     &types.AttributeValueMemberS{Value: "User"},
 							},
 							TableName:           aws.String("users"),
@@ -111,7 +113,7 @@ func TestCreate_Related(t *testing.T) {
 		},
 	)
 
-	newUser := examples.NewUserWithIDAndUsername("002", "fherbert")
+	newUser := examples.NewWithDetails("002", "Frank Herbert", "fherbert")
 	err = repo.Create(context.Background(), newUser)
 	assert.NoError(t, err)
 }
@@ -132,10 +134,11 @@ func TestUpdate_Related(t *testing.T) {
 			},
 			Output: &dynamodb.GetItemOutput{
 				Item: map[string]types.AttributeValue{
-					"PK": &types.AttributeValueMemberS{Value: "001"},
-					// No username yet.
-					// "Username": &types.AttributeValueMemberS{Value: "jappleseed"},
-					"Type": &types.AttributeValueMemberS{Value: "User"},
+					"PK":   &types.AttributeValueMemberS{Value: "001"},
+					"Name": &types.AttributeValueMemberS{Value: "John Appleseed"},
+					// No username yet!
+					"Username": &types.AttributeValueMemberS{Value: ""},
+					"Type":     &types.AttributeValueMemberS{Value: "User"},
 				},
 			},
 		},
@@ -153,6 +156,7 @@ func TestUpdate_Related(t *testing.T) {
 							Item: map[string]types.AttributeValue{
 								"PK":       &types.AttributeValueMemberS{Value: "001"},
 								"Username": &types.AttributeValueMemberS{Value: "jappleseed"},
+								"Name":     &types.AttributeValueMemberS{Value: "John Appleseed"},
 								"Type":     &types.AttributeValueMemberS{Value: "User"},
 							},
 							ConditionExpression: aws.String("attribute_exists (#0)"),
@@ -182,6 +186,52 @@ func TestUpdate_Related(t *testing.T) {
 		},
 	)
 
+	// Serves the second repo.Update()
+	// Updates the user's name.
+	stubber.Add(
+		testtools.Stub{
+			OperationName: "TransactWriteItems",
+			Input: &dynamodb.TransactWriteItemsInput{
+				TransactItems: []types.TransactWriteItem{
+					{
+						Put: &types.Put{
+							Item: map[string]types.AttributeValue{
+								"PK":       &types.AttributeValueMemberS{Value: "001"},
+								"Username": &types.AttributeValueMemberS{Value: "jappleseed"},
+								"Name":     &types.AttributeValueMemberS{Value: "John Appleseed, Sr."},
+								"Type":     &types.AttributeValueMemberS{Value: "User"},
+							},
+							ConditionExpression: aws.String("attribute_exists (#0)"),
+							ExpressionAttributeNames: map[string]string{
+								"#0": "PK",
+							},
+							TableName: aws.String("users"),
+						},
+					},
+					{
+						Put: &types.Put{
+							Item: map[string]types.AttributeValue{
+								"PK":     &types.AttributeValueMemberS{Value: "jappleseed"},
+								"UserId": &types.AttributeValueMemberS{Value: "001"},
+								"Type":   &types.AttributeValueMemberS{Value: "Username"},
+							},
+							ConditionExpression: aws.String("(attribute_exists (#0)) AND (#1 = :0)"),
+							ExpressionAttributeNames: map[string]string{
+								"#0": "PK",
+								"#1": "UserId",
+							},
+							ExpressionAttributeValues: map[string]types.AttributeValue{
+								":0": &types.AttributeValueMemberS{Value: "001"},
+							},
+							TableName: aws.String("users"),
+						},
+					},
+				},
+			},
+			Output: &dynamodb.TransactWriteItemsOutput{},
+		},
+	)
+
 	repo, err := dynamorm.NewBuilder[*examples.UserModel]().
 		WithClient(client).
 		WithTableName("users").
@@ -197,6 +247,11 @@ func TestUpdate_Related(t *testing.T) {
 
 	model.SetUsername("jappleseed")
 
+	err = repo.Update(context.Background(), model)
+	assert.NoError(t, err)
+	_ = model.Persisted()
+
+	model.SetName("John Appleseed, Sr.")
 	err = repo.Update(context.Background(), model)
 	assert.NoError(t, err)
 }

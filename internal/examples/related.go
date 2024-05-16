@@ -11,6 +11,7 @@ import (
 
 type userDto struct {
 	ID       string `dynamodbav:"PK"`
+	Name     string `dynamodbav:"Name"`
 	Username string `dynamodbav:"Username"`
 	Type     string `dynamodbav:"Type"`
 }
@@ -21,16 +22,17 @@ type usernameDto struct {
 	UserId   string `dynamodbav:"UserId"`
 }
 
-func NewUserWithIDAndUsername(id, username string) *UserModel {
+func NewWithDetails(id, name, username string) *UserModel {
 	u := &UserModel{
 		dto: &userDto{
 			ID:       id,
+			Name:     name,
 			Username: username,
 			Type:     "User",
 		},
 		// Unless the user was fetched from DynamoDB, we should assume that there isn't a prior username
 		// associated with the user yet.
-		priorUsernameModel: nil,
+		priorUsername: "",
 	}
 	return u
 }
@@ -38,8 +40,8 @@ func NewUserWithIDAndUsername(id, username string) *UserModel {
 type UserModel struct {
 	// The user item that will be saved to DynamoDB.
 	dto *userDto
-	// The username model that is associated with the user.
-	priorUsernameModel *usernameModel
+	// The username that is associated with the user.
+	priorUsername string
 }
 
 // Related implements dynamorm.HasRelated.
@@ -50,11 +52,10 @@ func (u *UserModel) Related() ([]dynamorm.Model, error) {
 
 	related := make([]dynamorm.Model, 0, 1)
 
-	// create a username model for the current Username value.
-	username := usernameModelFromUserDto(u.dto)
-
-	if username != nil {
-		if u.priorUsernameModel == nil {
+	if u.dto.Username != "" {
+		// The user has a username associated with it. We need to figure out if its new or existing.
+		username := usernameModelFromUserDto(u.dto)
+		if u.priorUsername == "" {
 			// There was no username associated with the user before.
 			// Seed the condition expression that attests that the username item does not exist.
 			expr, err := conditionExpressionForNewUsername(username)
@@ -63,12 +64,17 @@ func (u *UserModel) Related() ([]dynamorm.Model, error) {
 			}
 			username.SetConditionExpression(expr)
 			related = append(related, username)
-		} else if u.priorUsernameModel.dto.Username != username.dto.Username {
-			// The username associated with the user has changed. This is not allowed.
+		} else if u.dto.Username != u.priorUsername {
+			// We don't allow the username to be changed.
 			return nil, errors.New("username cannot be changed")
 		} else {
 			// The username associated with the user has not changed.
 			// We already seeded the condition expression that attests that the username item exists.
+			expr, err := conditionExpressionForExistingUsername(username)
+			if err != nil {
+				return nil, err
+			}
+			username.SetConditionExpression(expr)
 			related = append(related, username)
 		}
 	}
@@ -123,27 +129,31 @@ func NewUserModeler() dynamorm.Modeler[*UserModel] {
 			return nil, dynamorm.IncompatibleModelerError
 		}
 
-		username := usernameModelFromUserDto(dto)
-		if username != nil {
-			// When username already exists, seed the condition expression that attests that:
-			// 1. The username item exists.
-			// 2. The username item is associated with the user.
-			expr, err := conditionExpressionForExistingUsername(username)
-			if err != nil {
-				return nil, err
-			}
-			username.SetConditionExpression(expr)
-		}
-
 		return &UserModel{
-			dto:                dto,
-			priorUsernameModel: username,
+			dto:           dto,
+			priorUsername: dto.Username,
 		}, nil
 	}
 }
 
 func (u *UserModel) SetUsername(username string) {
 	u.dto.Username = username
+}
+
+func (u *UserModel) SetName(name string) {
+	u.dto.Name = name
+}
+
+// Persisted As the user of the Repository, you should call this method after a successful save operation.
+//
+// The Repository cannot be responsible for this because it may not have the ability to determine
+// which related models were saved or not, in cases where partial failures occur.
+
+// Here we reset the priorUsernameModel to the username model that was assume was saved.
+// Since we normally only save a model once, this shouldn't be needed in most cases.
+func (u *UserModel) Persisted() error {
+	u.priorUsername = u.dto.Username
+	return nil
 }
 
 func usernameModelFromUserDto(dto *userDto) (username *usernameModel) {
