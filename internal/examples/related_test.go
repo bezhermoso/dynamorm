@@ -250,6 +250,11 @@ func TestUpdate_Related(t *testing.T) {
 
 	err = repo.Update(context.Background(), model)
 	assert.NoError(t, err)
+
+	// NOTE: This is just our way to "reset" the model's internal state so we can test the next update.
+	// In most scenarios this isn't needed e.g. a model is updated once per request & discarded.
+	//
+	// I'd like to solve this in a better way in the future (e.g. "reset" based on context.Context state?)
 	_ = model.Persisted()
 
 	model.dto.Name = "John Appleseed, Sr."

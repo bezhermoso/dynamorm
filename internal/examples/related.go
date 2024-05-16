@@ -22,8 +22,8 @@ type usernameDto struct {
 	UserId   string `dynamodbav:"UserId"`
 }
 
-func NewWithDetails(id, name, username string) *UserModel {
-	u := &UserModel{
+func newWithDetails(id, name, username string) *userModel {
+	u := &userModel{
 		dto: &userDto{
 			ID:       id,
 			Name:     name,
@@ -37,26 +37,31 @@ func NewWithDetails(id, name, username string) *UserModel {
 	return u
 }
 
-type UserModel struct {
-	// The user item that will be saved to DynamoDB.
+// The user model is the main model that is saved to DynamoDB.
+type userModel struct {
+	// Holds the item that will be saved to DynamoDB. Returned by the Item method.
 	dto *userDto
-	// The username that is associated with the user.
+	// The username that is associated with the user. This is used to determine if the username changes.
 	priorUsername string
 }
 
-func (u *UserModel) SetUsername(username string) {
-	u.dto.Username = username
+// Item implements dynamorm.Model.
+func (u *userModel) Item() interface{} {
+	return u.dto
 }
 
-func (u *UserModel) SetName(name string) {
-	u.dto.Name = name
+// Key implements dynamorm.Model.
+func (u *userModel) Key() dynamorm.Key {
+	return dynamorm.Key{
+		"PK": dynamorm.KeyValue(u.dto.ID),
+	}
 }
 
 // Related implements dynamorm.HasRelated.
 // This is called whenever a user item is being saved. It provides the related username item that
 // should be saved along with the user item within a single transaction.
 // The username item associates the user with a unique username.
-func (u *UserModel) Related() ([]dynamorm.Model, error) {
+func (u *userModel) Related() ([]dynamorm.Model, error) {
 
 	related := make([]dynamorm.Model, 0, 1)
 
@@ -90,26 +95,14 @@ func (u *UserModel) Related() ([]dynamorm.Model, error) {
 }
 
 // ConditionExpression implements dynamorm.Model.
-func (u *UserModel) ConditionExpression() *expression.Expression {
+func (u *userModel) ConditionExpression() *expression.Expression {
 	return nil
-}
-
-// Item implements dynamorm.Model.
-func (u *UserModel) Item() interface{} {
-	return u.dto
-}
-
-// Key implements dynamorm.Model.
-func (u *UserModel) Key() dynamorm.Key {
-	return dynamorm.Key{
-		"PK": dynamorm.KeyValue(u.dto.ID),
-	}
 }
 
 // The username model is a related model to the user model, and is used to associate
 // a user with a unique username.
 //
-// It is an unexported type because outside code are not meant to interact with it directly.
+// We don't need a repository for the username model because it is not directly interacted with.
 // Instead, the user model orchestrates the creation or update of the username model depending
 // on the state of the Username field in the user model.
 //
@@ -126,6 +119,7 @@ type usernameModel struct {
 }
 
 // Item implements dynamorm.Model.
+// Returns itself, as it holds the attributes themselves.
 func (u *usernameModel) Item() interface{} {
 	return u
 }
@@ -137,9 +131,9 @@ func (u *usernameModel) Key() dynamorm.Key {
 	}
 }
 
-func NewUserModeler() dynamorm.Modeler[*UserModel] {
+func newUserModeler() dynamorm.Modeler[*userModel] {
 	// Called by dynamorm.Repository to create a new model instance from a DynamoDB item result.
-	return func(item map[string]types.AttributeValue) (*UserModel, error) {
+	return func(item map[string]types.AttributeValue) (*userModel, error) {
 		dto := &userDto{}
 		err := attributevalue.UnmarshalMap(item, dto)
 		if err != nil {
@@ -149,7 +143,7 @@ func NewUserModeler() dynamorm.Modeler[*UserModel] {
 			return nil, dynamorm.IncompatibleModelerError
 		}
 
-		return &UserModel{
+		return &userModel{
 			dto:           dto,
 			priorUsername: dto.Username,
 		}, nil
@@ -160,10 +154,10 @@ func NewUserModeler() dynamorm.Modeler[*UserModel] {
 //
 // The Repository cannot be responsible for this because it may not have the ability to determine
 // which related models were saved or not, in cases where partial failures occur.
-
+//
 // Here we reset the priorUsernameModel to the username model that was assume was saved.
 // Since we normally only save a model once, this shouldn't be needed in most cases.
-func (u *UserModel) Persisted() error {
+func (u *userModel) Persisted() error {
 	u.priorUsername = u.dto.Username
 	return nil
 }
@@ -206,5 +200,5 @@ func conditionExpressionForNewUsername(u *usernameModel) (*expression.Expression
 	return u.Key().CondtionExpressionForCreate()
 }
 
-var _ dynamorm.HasRelated = &UserModel{}
+var _ dynamorm.HasRelated = &userModel{}
 var _ dynamorm.Model = &usernameModel{}
