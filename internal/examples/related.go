@@ -44,6 +44,14 @@ type UserModel struct {
 	priorUsername string
 }
 
+func (u *UserModel) SetUsername(username string) {
+	u.dto.Username = username
+}
+
+func (u *UserModel) SetName(name string) {
+	u.dto.Name = name
+}
+
 // Related implements dynamorm.HasRelated.
 // This is called whenever a user item is being saved. It provides the related username item that
 // should be saved along with the user item within a single transaction.
@@ -98,22 +106,34 @@ func (u *UserModel) Key() dynamorm.Key {
 	}
 }
 
+// The username model is a related model to the user model, and is used to associate
+// a user with a unique username.
+//
+// It is an unexported type because outside code are not meant to interact with it directly.
+// Instead, the user model orchestrates the creation or update of the username model depending
+// on the state of the Username field in the user model.
+//
+// Also unlike the user model, the username model does not have a separate DTO struct; it it its own DTO.
+// This is to show that DTOs themselves can stand in as models that dynamorm can interact with.
 type usernameModel struct {
 	// The username item that will be saved to DynamoDB.
-	dto *usernameDto
-	// Embed the HasConditionExpression to provide a setter for conditional expressions.
+	Username string `dynamodbav:"PK"`
+	Type     string `dynamodbav:"Type"`
+	UserId   string `dynamodbav:"UserId"`
+
+	// Embed the HasConditionExpression to get the covinience of setting and getting the condition expression.
 	*dynamorm.HasConditionExpression
 }
 
 // Item implements dynamorm.Model.
 func (u *usernameModel) Item() interface{} {
-	return u.dto
+	return u
 }
 
 // Key implements dynamorm.Model.
 func (u *usernameModel) Key() dynamorm.Key {
 	return dynamorm.Key{
-		"PK": dynamorm.KeyValue(u.dto.Username),
+		"PK": dynamorm.KeyValue(u.Username),
 	}
 }
 
@@ -136,14 +156,6 @@ func NewUserModeler() dynamorm.Modeler[*UserModel] {
 	}
 }
 
-func (u *UserModel) SetUsername(username string) {
-	u.dto.Username = username
-}
-
-func (u *UserModel) SetName(name string) {
-	u.dto.Name = name
-}
-
 // Persisted As the user of the Repository, you should call this method after a successful save operation.
 //
 // The Repository cannot be responsible for this because it may not have the ability to determine
@@ -156,20 +168,20 @@ func (u *UserModel) Persisted() error {
 	return nil
 }
 
+// usernameModelFromUserDto creates a username model from a user DTO.
 func usernameModelFromUserDto(dto *userDto) (username *usernameModel) {
 	if dto.Username != "" {
 		username = &usernameModel{
 			HasConditionExpression: &dynamorm.HasConditionExpression{},
-			dto: &usernameDto{
-				Username: dto.Username,
-				Type:     "Username",
-				UserId:   dto.ID,
-			},
+			Username:               dto.Username,
+			Type:                   "Username",
+			UserId:                 dto.ID,
 		}
 	}
 	return username
 }
 
+// conditionExpressionForExistingUsername seeds the condition expression that attests that the username item exists.
 func conditionExpressionForExistingUsername(u *usernameModel) (*expression.Expression, error) {
 	// Attests that:
 	//  1.) The username item exists.
@@ -177,7 +189,7 @@ func conditionExpressionForExistingUsername(u *usernameModel) (*expression.Expre
 	expr, err := expression.NewBuilder().WithCondition(
 		expression.And(
 			expression.AttributeExists(expression.Name("PK")),
-			expression.Equal(expression.Name("UserId"), expression.Value(u.dto.UserId)),
+			expression.Equal(expression.Name("UserId"), expression.Value(u.UserId)),
 		),
 	).Build()
 	if err != nil {
@@ -186,16 +198,12 @@ func conditionExpressionForExistingUsername(u *usernameModel) (*expression.Expre
 	return &expr, nil
 }
 
-func conditionExpressionForNewUsername(*usernameModel) (*expression.Expression, error) {
+// conditionExpressionForNewUsername seeds the condition expression that attests that the username item does not exist.
+func conditionExpressionForNewUsername(u *usernameModel) (*expression.Expression, error) {
 	// Attests that:
 	//  1.) The username is not taken: username item w/ PK = username does not exist.
-	expr, err := expression.NewBuilder().WithCondition(
-		expression.AttributeNotExists(expression.Name("PK")),
-	).Build()
-	if err != nil {
-		return nil, err
-	}
-	return &expr, nil
+	// The dynamorm.Key type already has a convience method for this.
+	return u.Key().CondtionExpressionForCreate()
 }
 
 var _ dynamorm.HasRelated = &UserModel{}
