@@ -1,26 +1,25 @@
-package dynamorm_test
+package examples
 
 import (
 	"context"
 	"testing"
 
+	"github.com/awsdocs/aws-doc-sdk-examples/gov2/testtools"
 	"github.com/bezhermoso/dynamorm"
-	"github.com/bezhermoso/dynamorm/internal/examples"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/awsdocs/aws-doc-sdk-examples/gov2/testtools"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestBuilder_Related(t *testing.T) {
 	client, _ := newStubbedClient()
 
-	_, err := dynamorm.NewBuilder[*examples.UserModel]().
+	_, err := dynamorm.NewBuilder[*userModel]().
 		WithClient(client).
 		WithTableName("users").
-		WithModeler(examples.NewUserModeler()).
+		WithModeler(newUserModeler()).
 		Build()
 
 	assert.Nil(t, err)
@@ -50,15 +49,16 @@ func TestGet_Related(t *testing.T) {
 		},
 	)
 
-	repo, err := dynamorm.NewBuilder[*examples.UserModel]().
+	repo, err := dynamorm.NewBuilder[*userModel]().
 		WithClient(client).
 		WithTableName("users").
-		WithModeler(examples.NewUserModeler()).
+		WithModeler(newUserModeler()).
 		Build()
 
 	key := dynamorm.Key{
 		"PK": dynamorm.KeyValue("001"),
 	}
+
 	model, err := repo.Get(context.Background(), key)
 	assert.Nil(t, err)
 	assert.Equal(t, key, model.Key())
@@ -66,11 +66,12 @@ func TestGet_Related(t *testing.T) {
 
 func TestCreate_Related(t *testing.T) {
 	client, stubber := newStubbedClient()
-	repo, err := dynamorm.NewBuilder[*examples.UserModel]().
+	repo, err := dynamorm.NewBuilder[*userModel]().
 		WithClient(client).
 		WithTableName("users").
-		WithModeler(examples.NewUserModeler()).
+		WithModeler(newUserModeler()).
 		Build()
+
 	assert.Nil(t, err)
 
 	stubber.Add(
@@ -113,7 +114,7 @@ func TestCreate_Related(t *testing.T) {
 		},
 	)
 
-	newUser := examples.NewWithDetails("002", "Frank Herbert", "fherbert")
+	newUser := newWithDetails("002", "Frank Herbert", "fherbert")
 	err = repo.Create(context.Background(), newUser)
 	assert.NoError(t, err)
 }
@@ -232,10 +233,10 @@ func TestUpdate_Related(t *testing.T) {
 		},
 	)
 
-	repo, err := dynamorm.NewBuilder[*examples.UserModel]().
+	repo, err := dynamorm.NewBuilder[*userModel]().
 		WithClient(client).
 		WithTableName("users").
-		WithModeler(examples.NewUserModeler()).
+		WithModeler(newUserModeler()).
 		Build()
 
 	key := dynamorm.Key{
@@ -245,13 +246,13 @@ func TestUpdate_Related(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, key, model.Key())
 
-	model.SetUsername("jappleseed")
+	model.dto.Username = "jappleseed"
 
 	err = repo.Update(context.Background(), model)
 	assert.NoError(t, err)
 	_ = model.Persisted()
 
-	model.SetName("John Appleseed, Sr.")
+	model.dto.Name = "John Appleseed, Sr."
 	err = repo.Update(context.Background(), model)
 	assert.NoError(t, err)
 }
